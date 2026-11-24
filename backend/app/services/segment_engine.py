@@ -101,3 +101,121 @@ class SegmentEngineService(BaseModuleService):
         snapshot["total_members"] = db.count("segment_members")
         snapshot["generated_count"] = db.count("segments", "status='已生成'")
         return snapshot
+
+    # ------------------------------------------------------------------
+    # 受控统计：授权维度与业务范围
+    # ------------------------------------------------------------------
+
+    def grant_members(self, recipient: str, segment_id: int, member_keys: list[str]) -> dict[str, Any]:
+        """拥有方把指定成员授权给接收方（授权维度）。
+
+        只允许授权真实属于该分群的成员；重复授权自动去重。
+        """
+        granted = 0
+        skipped: list[str] = []
+        for key in member_keys:
+            member = db.fetchone(
+                "SELECT id FROM segment_members WHERE segment_id=? AND member_key=?",
+                [segment_id, key],
+            )
+            if member is None:
+                skipped.append(key)
+                continue
+            exists = db.fetchone(
+                "SELECT id FROM segment_member_grants WHERE recipient=? AND segment_id=? AND member_key=?",
+                [recipient, segment_id, key],
+            )
+            if exists:
+                continue
+            db.insert("segment_member_grants", {
+                "recipient": recipient,
+                "segment_id": segment_id,
+                "member_key": key,
+            })
+            granted += 1
+        return {
+            "ok": True,
+            "recipient": recipient,
+            "segment_id": segment_id,
+            "granted": granted,
+            "skipped": skipped,
+        }
+
+    def set_recipient_scope(self, recipient: str, segment_ids: list[int]) -> dict[str, Any]:
+        """设定接收方的业务范围：允许领取哪些归属分群的受控统计。"""
+        db.delete("recipient_scopes", "recipient=?", [recipient])
+        for sid in sorted({int(s) for s in segment_ids}):
+            db.insert("recipient_scopes", {"recipient": recipient, "segment_id": sid})
+        return {"ok": True, "recipient": recipient, "scope": sorted({int(s) for s in segment_ids})}
+
+    def recipient_scope(self, recipient: str) -> set[int]:
+        """接收方业务范围覆盖的归属分群集合。"""
+        rows = db.fetchall(
+            "SELECT segment_id FROM recipient_scopes WHERE recipient=?", [recipient])
+        return {int(r["segment_id"]) for r in rows}
+
+    def comparison_data(
+        self,
+        recipient: str,
+        segment_ids: list[int],
+        attr_key: str,
+    ) -> list[dict[str, Any]]:
+        """把授权成员和归属关联起来，向统计入口提供实际纳入属性计算的对比数据。
+
+        只有同时满足两个维度的成员才会进入对比数据：
+          1. 授权维度：成员已授权给该接收方（segment_member_grants）；
+          2. 归属维度：成员属于本次请求的归属分群。
+        未授权成员绝不出现，因此越权成员无法偷偷补足样本；
+        返回的每一行就是统计入口实际纳入属性计算的样本。
+        """
+        seg_ids = sorted({int(s) for s in segment_ids})
+        if not seg_ids:
+            return []
+        placeholders = ",".join("?" for _ in seg_ids)
+        rows = db.fetchall(
+            f"""
+            SELECT g.segment_id AS segment_id, g.member_key AS member_key, m.member_attrs AS member_attrs
+            FROM segment_member_grants g
+            JOIN segment_members m
+              ON m.segment_id = g.segment_id AND m.member_key = g.member_key
+            WHERE g.recipient = ? AND g.segment_id IN ({placeholders})
+            ORDER BY g.segment_id, g.member_key
+            """,
+            [recipient, *seg_ids],
+        )
+        data: list[dict[str, Any]] = []
+        for row in rows:
+            try:
+                attrs = json.loads(row["member_attrs"]) if isinstance(row["member_attrs"], str) else (row["member_attrs"] or {})
+            except (json.JSONDecodeError, TypeError):
+                attrs = {}
+            value = attrs.get(attr_key)
+            if value is None:
+                continue
+            data.append({
+                "segment_id": int(row["segment_id"]),
+                "member_key": row["member_key"],
+                "value": float(value),
+            })
+        return data
+
+    def update_member_attr(self, segment_id: int, member_key: str, attr_key: str, value: float) -> dict[str, Any]:
+        """更新成员属性值（拥有方侧操作，用于验证已发布快照不受后续变更影响）。"""
+        row = db.fetchone(
+            "SELECT member_attrs FROM segment_members WHERE segment_id=? AND member_key=?",
+            [segment_id, member_key],
+        )
+        if row is None:
+            return {"ok": False, "message": f"成员 {member_key} 不属于分群 {segment_id}"}
+        try:
+            attrs = json.loads(row["member_attrs"]) if isinstance(row["member_attrs"], str) else (row["member_attrs"] or {})
+        except (json.JSONDecodeError, TypeError):
+            attrs = {}
+        attrs[attr_key] = value
+        db.update(
+            "segment_members",
+            {"member_attrs": json.dumps(attrs, ensure_ascii=False)},
+            "segment_id=? AND member_key=?",
+            [segment_id, member_key],
+        )
+        return {"ok": True, "segment_id": segment_id, "member_key": member_key, attr_key: value}

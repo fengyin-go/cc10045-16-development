@@ -847,6 +847,17 @@ def _extract_dim_values(members: list[dict[str, Any]], dim: str) -> list[float]:
     return result
 
 
+def compute_controlled_average(values: list[float]) -> float:
+    """受控统计口径：对实际纳入属性计算的授权样本求均值。
+
+    输入必须已经过分群引擎的授权+归属双重过滤（comparison_data），
+    这里只对最终纳入的样本负责，四舍五入到 4 位小数。
+    """
+    if not values:
+        return 0.0
+    return round(statistics.mean(values), 4)
+
+
 # ============================================================================
 # 报告生成管道
 # ============================================================================

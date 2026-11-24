@@ -237,6 +237,40 @@ DDL_STATEMENTS = [
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
     )""",
 
+    # 受控统计：授权维度（哪些成员被授权给哪个接收方）
+    """CREATE TABLE IF NOT EXISTS segment_member_grants (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        recipient TEXT NOT NULL,
+        segment_id INTEGER NOT NULL,
+        member_key TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (recipient, segment_id, member_key)
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_smg_lookup ON segment_member_grants(recipient, segment_id)",
+
+    # 受控统计：接收方业务范围（覆盖哪些归属分群）
+    """CREATE TABLE IF NOT EXISTS recipient_scopes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        recipient TEXT NOT NULL,
+        segment_id INTEGER NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE (recipient, segment_id)
+    )""",
+
+    # 受控统计：发布记录（统计入口交付快照 + 拥有方审计样本）
+    """CREATE TABLE IF NOT EXISTS controlled_stat_releases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        period TEXT NOT NULL,
+        recipient TEXT NOT NULL,
+        attr_key TEXT NOT NULL,
+        segment_ids TEXT NOT NULL DEFAULT '[]',
+        authorized_count INTEGER NOT NULL DEFAULT 0,
+        stat_value REAL NOT NULL DEFAULT 0.0,
+        included_members TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    )""",
+    "CREATE INDEX IF NOT EXISTS idx_csr_lookup ON controlled_stat_releases(recipient, period, attr_key)",
+
     """CREATE TABLE IF NOT EXISTS reports (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         report_name TEXT NOT NULL,

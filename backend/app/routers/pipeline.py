@@ -1,7 +1,9 @@
 """数据分析管道路由：事件采集、聚合执行、指标快照、分群计算等核心操作入口。"""
 from __future__ import annotations
 
-from fastapi import APIRouter
+from typing import Any
+
+from fastapi import APIRouter, Body
 
 from app.database import db
 from app.pipeline import (
@@ -92,6 +94,56 @@ def api_compute_comparison(comparison_id: int) -> dict:
     """对指定分群对比执行计算。"""
     svc = service_for("cohort_compare")
     return svc.run_comparison(comparison_id)
+
+
+# ---------------------------------------------------------------------------
+# 受控统计：按成员归属 + 授权维度向协作部门发布对比统计
+# ---------------------------------------------------------------------------
+
+@router.post("/controlled-stats/grants")
+def api_grant_members(payload: dict[str, Any] = Body(...)) -> dict:
+    """拥有方把成员授权给接收方（授权维度）。"""
+    svc = service_for("segment_engine")
+    return svc.grant_members(
+        str(payload.get("recipient", "")),
+        int(payload.get("segment_id", 0)),
+        [str(k) for k in payload.get("member_keys", [])],
+    )
+
+
+@router.post("/controlled-stats/scope")
+def api_set_recipient_scope(payload: dict[str, Any] = Body(...)) -> dict:
+    """拥有方设定接收方的业务范围（覆盖的归属分群）。"""
+    svc = service_for("segment_engine")
+    return svc.set_recipient_scope(
+        str(payload.get("recipient", "")),
+        [int(s) for s in payload.get("segment_ids", [])],
+    )
+
+
+@router.post("/controlled-stats/request")
+def api_request_controlled_stat(payload: dict[str, Any] = Body(...)) -> dict:
+    """接收方领取某发布期的受控统计；只返回聚合结果，不含成员明细。"""
+    svc = service_for("cohort_compare")
+    return svc.request_controlled_stat(
+        str(payload.get("recipient", "")),
+        str(payload.get("period", "")),
+        [int(s) for s in payload.get("segment_ids", [])],
+        str(payload.get("attr_key", "")),
+    )
+
+
+@router.post("/controlled-stats/audit")
+def api_audit_controlled_stat(payload: dict[str, Any] = Body(...)) -> dict:
+    """拥有方核查某次对比输出实际纳入了哪些授权样本。"""
+    svc = service_for("cohort_compare")
+    return svc.audit_release(
+        str(payload.get("requester", "")),
+        str(payload.get("recipient", "")),
+        str(payload.get("period", "")),
+        [int(s) for s in payload.get("segment_ids", [])],
+        str(payload.get("attr_key", "")),
+    )
 
 
 @router.post("/cube/{cube_id}/precompute")
